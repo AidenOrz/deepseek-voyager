@@ -1,3 +1,10 @@
+> [!WARNING]
+> ## 项目已停止维护
+>
+> 由于维护者时间与精力有限，DeepSeek Voyager 现已停止维护，后续不再提供功能更新或兼容性修复。现有代码和 Release 将继续保留，供学习、使用与自行维护。
+>
+> 本项目改编自 [Nagi-ovo/gemini-voyager](https://github.com/Nagi-ovo/gemini-voyager)。衷心感谢原作者 [@Nagi-ovo](https://github.com/Nagi-ovo) 的开源工作，也感谢所有使用、反馈和支持本项目的朋友。
+
 # DeepSeek Voyager
 <p align="center">
   <a href="https://github.com/Azurboy/gemini-voyager/blob/main/LICENSE">
