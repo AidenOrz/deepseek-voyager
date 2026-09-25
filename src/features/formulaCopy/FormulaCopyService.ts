@@ -109,15 +109,40 @@ export class FormulaCopyService {
       return;
     }
 
-    const latexSource = mathElement.getAttribute('data-math');
+    const latexSource = this.extractLatex(mathElement);
     if (!latexSource) {
-      this.logger.warn('Math element found but no data-math attribute');
+      this.logger.debug('Math element found but no LaTeX source extracted');
       return;
     }
 
     this.copyFormula(latexSource, event.clientX, event.clientY);
     event.stopPropagation();
   };
+
+  /**
+   * Extract LaTeX source from a math element.
+   * Supports:
+   * - Gemini-style `data-math` attribute
+   * - KaTeX rendering (used by DeepSeek): LaTeX lives in
+   *   `<annotation encoding="application/x-tex">` inside the KaTeX subtree
+   * - MathML `<semantics>` annotations
+   */
+  private extractLatex(mathElement: HTMLElement): string | null {
+    const direct = mathElement.getAttribute('data-math');
+    if (direct && direct.trim()) {
+      return direct.trim();
+    }
+
+    const annotations = mathElement.querySelectorAll('annotation');
+    for (const annotation of Array.from(annotations)) {
+      const encoding = annotation.getAttribute('encoding') || '';
+      const text = annotation.textContent?.trim();
+      if (text && (encoding === '' || /tex/i.test(encoding))) {
+        return text;
+      }
+    }
+    return null;
+  }
 
   /**
    * Copy formula to clipboard and show notification
@@ -201,10 +226,11 @@ export class FormulaCopyService {
 
       // Check if element is a math container
       if (this.isMathContainer(current)) {
+        // Prefer an explicit data-math descendant (Gemini markup);
+        // otherwise the container itself is the math element and LaTeX
+        // is extracted from its KaTeX/MathML annotation (DeepSeek markup)
         const mathElement = this.findDataMathInSubtree(current, depth);
-        if (mathElement) {
-          return mathElement;
-        }
+        return mathElement || current;
       }
 
       current = current.parentElement;
@@ -218,7 +244,10 @@ export class FormulaCopyService {
    * Check if element is a math container
    */
   private isMathContainer(element: HTMLElement): boolean {
+    const tag = element.tagName.toLowerCase();
     return (
+      tag === 'math' ||
+      tag === 'mjx-container' ||
       element.classList.contains('math-inline') ||
       element.classList.contains('math-display') ||
       element.classList.contains('katex') ||

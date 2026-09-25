@@ -1,5 +1,6 @@
 import { startExportButton } from './export/index';
 import { startFolderManager } from './folder/index';
+import { startFormulaCopy } from '@/features/formulaCopy';
 import { startTimeline } from './timeline/index';
 
 try {
@@ -9,6 +10,7 @@ try {
     startTimeline();
     startFolderManager();
     startExportButton();
+    startFormulaCopy();
     console.log('[DeepSeek Voyager] 初始化完成');
   }
 } catch (e) {
