@@ -49,6 +49,8 @@ export class FolderManager {
   private exportInProgress: boolean = false; // Lock to prevent concurrent exports
   private removalCheckTimers: Map<string, number> = new Map();
   private draggableRescanTimer: number | null = null;
+  private conversationListObserver: MutationObserver | null = null;
+  private nativeMenuObserver: MutationObserver | null = null;
 
   constructor() {
     this.loadData();
@@ -158,6 +160,26 @@ export class FolderManager {
         return el;
       }
     }
+
+    // 动态兜底：DeepSeek 改版导致预置选择器全部失效时，
+    // 从任一对话链接向上找"对话列表级"容器（包含 >=2 个链接的最近祖先），
+    // 保证文件夹 UI 始终能锚定到侧边栏
+    const links = Array.from(document.querySelectorAll('a[href*="/a/chat/s/"]'));
+    if (links.length > 0) {
+      let up: HTMLElement | null = links[0] as HTMLElement;
+      let best: HTMLElement | null = null;
+      for (let depth = 0; depth < 6; depth++) {
+        up = up.parentElement as HTMLElement | null;
+        if (!up || up === document.body) break;
+        best = up;
+        const count = up.querySelectorAll('a[href*="/a/chat/s/"]').length;
+        if (count >= 2) {
+          return up;
+        }
+      }
+      if (best) return best;
+    }
+
     return candidates[0] || null;
   }
 
@@ -193,6 +215,10 @@ export class FolderManager {
 
   private createFolderUI(): void {
     if (!this.recentSection) return;
+    // 幂等：UI 已挂载时不重复创建
+    if (this.containerElement && document.contains(this.containerElement)) return;
+    // 锚点已脱离文档（React 重渲染移除）时放弃本次创建，交由 guardian 重解析
+    if (!document.contains(this.recentSection)) return;
 
     // Create folder container
     this.containerElement = document.createElement('div');
@@ -207,7 +233,12 @@ export class FolderManager {
     this.containerElement.appendChild(foldersList);
 
     // Insert before Recent section
-    this.recentSection.parentElement?.insertBefore(this.containerElement, this.recentSection);
+    const parent = this.recentSection.parentElement;
+    if (parent) {
+      parent.insertBefore(this.containerElement, this.recentSection);
+    } else {
+      this.recentSection.insertBefore(this.containerElement, this.recentSection.firstChild);
+    }
   }
 
   private createHeader(): HTMLElement {
@@ -838,6 +869,7 @@ export class FolderManager {
       });
     });
 
+    this.conversationListObserver = observer;
     observer.observe(this.sidebarContainer, {
       childList: true,
       subtree: true,
@@ -872,6 +904,41 @@ export class FolderManager {
   }
 
   /**
+   * 自愈守卫：React 重渲染可能移除注入的容器节点，或锚点退化为
+   * 不含对话链接的容器。定期检查并按需重新解析锚点、重建 UI。
+   */
+  private ensureFolderUIMounted(): void {
+    try {
+      const mounted = !!this.containerElement && document.contains(this.containerElement);
+      const anchoredOk =
+        !!this.sidebarContainer &&
+        document.contains(this.sidebarContainer) &&
+        !!this.sidebarContainer.querySelector('a[href*="/a/chat/s/"]');
+
+      if (mounted && anchoredOk) return;
+
+      const fresh = this.resolveSidebarContainer();
+      if (fresh && fresh.querySelector('a[href*="/a/chat/s/"]')) {
+        // 找到了更好的锚点：迁移并重建
+        this.sidebarContainer = fresh;
+        this.recentSection = fresh;
+        this.containerElement?.remove();
+        this.containerElement = null;
+        this.createFolderUI();
+        if (this.containerElement && document.contains(this.containerElement)) {
+          this.debug('文件夹 UI 已重新挂载');
+        }
+      } else if (!mounted && this.sidebarContainer && document.contains(this.sidebarContainer)) {
+        // 还没有更好的锚点：先用现有锚点保证 UI 可见
+        this.recentSection = this.sidebarContainer;
+        this.createFolderUI();
+      }
+    } catch (e) {
+      this.debug('ensureFolderUIMounted 失败:', e);
+    }
+  }
+
+  /**
    * 定期重扫侧边栏对话项并为未打标的节点补充拖拽能力。
    * React 复用/重挂载 DOM 节点时不会触发 addedNodes，
    * 重扫保证新节点总是可拖拽（拖拽目标选择器只匹配侧边栏链接，扫描 document 安全）。
@@ -879,6 +946,8 @@ export class FolderManager {
   private startDraggableRescan(): void {
     if (this.draggableRescanTimer !== null) return;
     this.draggableRescanTimer = window.setInterval(() => {
+      // 自愈守卫：确保文件夹 UI 始终挂载在正确位置
+      this.ensureFolderUIMounted();
       try {
         const items = document.querySelectorAll('a[href*="/a/chat/s/"]');
         items.forEach((el) => {
@@ -900,6 +969,27 @@ export class FolderManager {
     }
     this.removalCheckTimers.forEach((timer) => clearTimeout(timer));
     this.removalCheckTimers.clear();
+  }
+
+  /** 完整清理：断开 observer、停止定时器、移除注入的 UI（SPA 重复初始化/卸载时使用） */
+  destroy(): void {
+    this.stopDraggableRescan();
+    try {
+      this.conversationListObserver?.disconnect();
+    } catch { /* ignore */ }
+    try {
+      this.nativeMenuObserver?.disconnect();
+    } catch { /* ignore */ }
+    this.conversationListObserver = null;
+    this.nativeMenuObserver = null;
+    if (this.tooltipTimeout) {
+      clearTimeout(this.tooltipTimeout);
+      this.tooltipTimeout = null;
+    }
+    try {
+      this.tooltipElement?.remove();
+    } catch { /* ignore */ }
+    this.tooltipElement = null;
   }
 
   /**
@@ -1668,6 +1758,7 @@ export class FolderManager {
       });
     });
 
+    this.nativeMenuObserver = observer;
     observer.observe(document.body, {
       childList: true,
       subtree: true,
