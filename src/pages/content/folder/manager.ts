@@ -51,6 +51,23 @@ export class FolderManager {
   private draggableRescanTimer: number | null = null;
   private conversationListObserver: MutationObserver | null = null;
   private nativeMenuObserver: MutationObserver | null = null;
+  // 自定义指针拖拽状态（绕过页面可能阻止的原生 HTML5 拖拽）
+  private pendingPointerDrag: {
+    sourceEl: HTMLElement;
+    dragData: DragData;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null = null;
+  private customDrag: {
+    sourceEl: HTMLElement;
+    dragData: DragData;
+    pointerId: number;
+    ghost: HTMLDivElement;
+    hoverEl: HTMLElement | null;
+    targetFolderId: string | null;
+  } | null = null;
+  private suppressNextClick = false;
 
   constructor() {
     this.loadData();
@@ -95,6 +112,9 @@ export class FolderManager {
 
       // 定期重扫，保证 React 重挂载的对话项始终可拖拽
       this.startDraggableRescan();
+
+      // 全局指针拖拽监听（自定义拖拽回退）
+      this.ensureCustomDragListeners();
 
       // Page unload cleanup
       window.addEventListener(
@@ -468,6 +488,11 @@ export class FolderManager {
       convEl.style.opacity = '1';
     });
 
+    // 指针拖拽回退（与原生 HTML5 拖拽并存，互相不冲突）
+    convEl.addEventListener('pointerdown', (e) =>
+      this.handleConversationPointerDown(e as PointerEvent, convEl)
+    );
+
     // Conversation icon
     const icon = createIcon('chat_bubble', 'gv-conversation-icon');
 
@@ -767,6 +792,11 @@ export class FolderManager {
     element.addEventListener('dragend', () => {
       element.style.opacity = '1';
     });
+
+    // 指针拖拽回退：页面阻止原生 HTML5 拖拽时仍可拖入文件夹
+    element.addEventListener('pointerdown', (e) =>
+      this.handleConversationPointerDown(e as PointerEvent, element)
+    );
   }
 
   /**
@@ -794,6 +824,236 @@ export class FolderManager {
       } catch { /* ignore */ }
     }
     return null;
+  }
+
+  /**
+   * 构建会话拖拽数据。
+   * 优先使用元素 dataset（文件夹内会话行），否则从 href 提取（侧边栏原生项）。
+   */
+  private buildConversationDragData(element: HTMLElement, sourceFolderId?: string): DragData {
+    const storedId = element.dataset.conversationId;
+    if (storedId && sourceFolderId) {
+      const conv = this.data.folderContents[sourceFolderId]?.find(
+        (c) => c.conversationId === storedId
+      );
+      if (conv) {
+        return {
+          type: 'conversation',
+          conversationId: conv.conversationId,
+          title: conv.title,
+          url: conv.url,
+          isGem: conv.isGem,
+          gemId: conv.gemId,
+          sourceFolderId,
+        };
+      }
+    }
+
+    const titleEl = tryFindElement(DEEPSEEK_SELECTORS.conversationTitle, element);
+    const title = titleEl?.textContent?.trim() || element.textContent?.trim() || 'Untitled';
+    const conversationId = storedId || this.extractConversationId(element);
+    const conversationData = this.extractConversationData(element);
+    return {
+      type: 'conversation',
+      conversationId,
+      title,
+      url: conversationData.url,
+      isGem: conversationData.isGem,
+      gemId: conversationData.gemId,
+      sourceFolderId,
+    };
+  }
+
+  /** 会话元素按下时记录待定拖拽（移动超阈值后才真正开始，不影响普通点击） */
+  private handleConversationPointerDown(e: PointerEvent, element: HTMLElement): void {
+    if (e.button !== 0 || this.customDrag || this.pendingPointerDrag) return;
+    const sourceFolderId = element.dataset.folderId || undefined;
+    this.pendingPointerDrag = {
+      sourceEl: element,
+      dragData: this.buildConversationDragData(element, sourceFolderId),
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+    };
+  }
+
+  /** 安装全局指针拖拽监听（仅一次） */
+  private ensureCustomDragListeners(): void {
+    const flag = (this as any)._customDragListenersInstalled;
+    if (flag) return;
+    (this as any)._customDragListenersInstalled = true;
+
+    // 自定义拖拽进行中时抑制原生拖拽，避免两套机制同时生效
+    document.addEventListener(
+      'dragstart',
+      ((e: DragEvent) => {
+        if (this.customDrag) e.preventDefault();
+      }) as EventListener,
+      true
+    );
+
+    document.addEventListener('pointermove', (e) => this.handlePointerMove(e as PointerEvent));
+    document.addEventListener('pointerup', (e) => this.handlePointerUp(e as PointerEvent));
+    document.addEventListener('pointercancel', () => {
+      if (this.customDrag) this.cleanupCustomDrag();
+      this.pendingPointerDrag = null;
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.customDrag) this.cleanupCustomDrag();
+    });
+    // 拖拽投放后拦截一次 click，防止原生 <a> 触发导航
+    document.addEventListener(
+      'click',
+      ((e: MouseEvent) => {
+        if (this.suppressNextClick) {
+          this.suppressNextClick = false;
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }) as EventListener,
+      true
+    );
+  }
+
+  private handlePointerMove(e: PointerEvent): void {
+    if (this.customDrag) {
+      if (e.pointerId !== this.customDrag.pointerId) return;
+      this.moveGhost(e.clientX, e.clientY);
+      this.updateCustomDragHover(e.clientX, e.clientY);
+      return;
+    }
+    const pending = this.pendingPointerDrag;
+    if (!pending || e.pointerId !== pending.pointerId) return;
+    if (Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY) < 8) return;
+    this.beginCustomDrag(e);
+  }
+
+  private handlePointerUp(e: PointerEvent): void {
+    if (this.customDrag) {
+      const drag = this.customDrag;
+      const folderId = drag.targetFolderId;
+      const dragData = drag.dragData;
+      this.cleanupCustomDrag();
+      if (folderId) {
+        // 抑制随后的 click（原生 <a> 会触发导航）
+        this.suppressNextClick = true;
+        window.setTimeout(() => {
+          this.suppressNextClick = false;
+        }, 0);
+        this.debug('自定义拖拽投放:', dragData.title, '→', folderId);
+        this.addConversationToFolder(folderId, dragData);
+      }
+      return;
+    }
+    if (this.pendingPointerDrag && e.pointerId === this.pendingPointerDrag.pointerId) {
+      this.pendingPointerDrag = null;
+    }
+  }
+
+  private beginCustomDrag(e: PointerEvent): void {
+    const pending = this.pendingPointerDrag;
+    if (!pending) return;
+    this.pendingPointerDrag = null;
+
+    const ghost = document.createElement('div');
+    ghost.className = 'gv-drag-ghost';
+    ghost.textContent = pending.dragData.title || 'Untitled';
+    Object.assign(ghost.style, {
+      position: 'fixed',
+      left: '0px',
+      top: '0px',
+      zIndex: '2147483647',
+      pointerEvents: 'none',
+      padding: '6px 10px',
+      borderRadius: '8px',
+      background: 'rgba(30,30,30,0.92)',
+      color: '#fff',
+      fontSize: '12px',
+      lineHeight: '1.4',
+      maxWidth: '260px',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+      transform: 'translate(-50%, -140%)',
+    } as CSSStyleDeclaration);
+    document.body.appendChild(ghost);
+    document.body.style.userSelect = 'none';
+
+    this.customDrag = {
+      sourceEl: pending.sourceEl,
+      dragData: pending.dragData,
+      pointerId: pending.pointerId,
+      ghost,
+      hoverEl: null,
+      targetFolderId: null,
+    };
+    this.moveGhost(e.clientX, e.clientY);
+    this.updateCustomDragHover(e.clientX, e.clientY);
+    this.debug('自定义拖拽开始:', pending.dragData.title);
+  }
+
+  private moveGhost(x: number, y: number): void {
+    if (!this.customDrag) return;
+    this.customDrag.ghost.style.left = `${x}px`;
+    this.customDrag.ghost.style.top = `${y}px`;
+  }
+
+  /**
+   * 解析指针位置对应的投放目标。
+   * 独立成方法便于在无布局引擎的测试环境中 stub。
+   */
+  private resolveDropTarget(x: number, y: number): {
+    folderId: string | null;
+    highlightEl: HTMLElement | null;
+  } {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    const target = hit?.closest(
+      '.gv-folder-item-header, .gv-folder-conversation, .gv-folder-list, .gv-folder-header, .gv-folder-container'
+    ) as HTMLElement | null;
+
+    if (!target) return { folderId: null, highlightEl: null };
+
+    if (target.classList.contains('gv-folder-item-header')) {
+      return { folderId: target.dataset.folderId || null, highlightEl: target };
+    }
+    if (target.classList.contains('gv-folder-conversation')) {
+      return {
+        folderId: target.dataset.folderId || null,
+        highlightEl: (target.closest('.gv-folder-item-header') as HTMLElement) || null,
+      };
+    }
+    // 列表 / 顶部 header / 容器 = 根区域
+    return {
+      folderId: ROOT_CONVERSATIONS_ID,
+      highlightEl: (target.closest('.gv-folder-list') as HTMLElement) || target,
+    };
+  }
+
+  private updateCustomDragHover(x: number, y: number): void {
+    const drag = this.customDrag;
+    if (!drag) return;
+
+    const { folderId, highlightEl } = this.resolveDropTarget(x, y);
+
+    if (drag.hoverEl && drag.hoverEl !== highlightEl) {
+      drag.hoverEl.classList.remove('gv-folder-dragover');
+    }
+    drag.hoverEl = highlightEl;
+    drag.targetFolderId = folderId;
+    if (highlightEl && folderId) {
+      highlightEl.classList.add('gv-folder-dragover');
+    }
+  }
+
+  private cleanupCustomDrag(): void {
+    if (!this.customDrag) return;
+    try {
+      this.customDrag.hoverEl?.classList.remove('gv-folder-dragover');
+      this.customDrag.ghost.remove();
+    } catch { /* ignore */ }
+    this.customDrag = null;
+    document.body.style.userSelect = '';
   }
 
   private extractConversationId(element: HTMLElement): string {
@@ -974,6 +1234,8 @@ export class FolderManager {
   /** 完整清理：断开 observer、停止定时器、移除注入的 UI（SPA 重复初始化/卸载时使用） */
   destroy(): void {
     this.stopDraggableRescan();
+    this.cleanupCustomDrag();
+    this.pendingPointerDrag = null;
     try {
       this.conversationListObserver?.disconnect();
     } catch { /* ignore */ }
