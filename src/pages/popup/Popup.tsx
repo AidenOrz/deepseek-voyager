@@ -27,10 +27,10 @@ export default function Popup() {
     resetPosition?: boolean
   ) => {
     const payload: any = {};
-    if (nextMode) payload.geminiTimelineScrollMode = nextMode;
-    if (typeof nextHide === 'boolean') payload.geminiTimelineHideContainer = nextHide;
-    if (typeof nextDraggable === 'boolean') payload.geminiTimelineDraggable = nextDraggable;
-    if (resetPosition) payload.geminiTimelinePosition = null;
+    if (nextMode) payload.deepseekTimelineScrollMode = nextMode;
+    if (typeof nextHide === 'boolean') payload.deepseekTimelineHideContainer = nextHide;
+    if (typeof nextDraggable === 'boolean') payload.deepseekTimelineDraggable = nextDraggable;
+    if (resetPosition) payload.deepseekTimelinePosition = null;
     try {
       chrome.storage?.sync?.set(payload);
     } catch {}
@@ -62,15 +62,15 @@ export default function Popup() {
     try {
       chrome.storage?.sync?.get(
         {
-          geminiTimelineScrollMode: 'flow',
-          geminiTimelineHideContainer: false,
-          geminiTimelineDraggable: false,
+          deepseekTimelineScrollMode: 'flow',
+          deepseekTimelineHideContainer: false,
+          deepseekTimelineDraggable: false,
         },
         (res) => {
-          const m = res?.geminiTimelineScrollMode as ScrollMode;
+          const m = res?.deepseekTimelineScrollMode as ScrollMode;
           if (m === 'jump' || m === 'flow') setMode(m);
-          setHideContainer(!!res?.geminiTimelineHideContainer);
-          setDraggableTimeline(!!res?.geminiTimelineDraggable);
+          setHideContainer(!!res?.deepseekTimelineHideContainer);
+          setDraggableTimeline(!!res?.deepseekTimelineDraggable);
         }
       );
     } catch {}

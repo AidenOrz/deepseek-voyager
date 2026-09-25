@@ -81,6 +81,8 @@ export class TimelineManager {
   private onVisualViewportResize: (() => void) | null = null;
   private zeroTurnsTimer: number | null = null;
   private onStorage: ((e: StorageEvent) => void) | null = null;
+  private onStorageSync: ((changes: any, area: string) => void) | null = null;
+  private scrollAnimRafId: number | null = null;
   private starred: Set<string> = new Set();
   private markerMap: Map<
     string,
@@ -161,15 +163,15 @@ export class TimelineManager {
             this.hideContainer = !!res?.deepseekTimelineHideContainer;
             this.applyContainerVisibility();
             this.toggleDraggable(!!res?.deepseekTimelineDraggable);
-            if (res?.deepseekTimelinePosition) {
-              this.ui.timelineBar!.style.top = `${res.deepseekTimelinePosition.top}px`;
-              this.ui.timelineBar!.style.left = `${res.deepseekTimelinePosition.left}px`;
+            if (res?.deepseekTimelinePosition && this.ui.timelineBar) {
+              this.ui.timelineBar.style.top = `${res.deepseekTimelinePosition.top}px`;
+              this.ui.timelineBar.style.left = `${res.deepseekTimelinePosition.left}px`;
             }
           }
         );
         // listen for changes from popup and update mode live
         try {
-          (window as any).chrome.storage.onChanged.addListener((changes: any, area: string) => {
+          this.onStorageSync = (changes: any, area: string) => {
             if (area !== 'sync') return;
             if (changes?.deepseekTimelineScrollMode) {
               const n = changes.deepseekTimelineScrollMode.newValue;
@@ -183,10 +185,13 @@ export class TimelineManager {
               this.toggleDraggable(!!changes.deepseekTimelineDraggable.newValue);
             }
             if (changes?.deepseekTimelinePosition && !changes.deepseekTimelinePosition.newValue) {
-              this.ui.timelineBar!.style.top = '';
-              this.ui.timelineBar!.style.left = '';
+              if (this.ui.timelineBar) {
+                this.ui.timelineBar.style.top = '';
+                this.ui.timelineBar.style.left = '';
+              }
             }
-          });
+          };
+          (window as any).chrome.storage.onChanged.addListener(this.onStorageSync);
         } catch {}
       } else {
         const saved = localStorage.getItem('deepseekTimelineScrollMode');
@@ -1006,24 +1011,36 @@ export class TimelineManager {
     const distance = targetPosition - startPosition;
     let startTime: number | null = null;
 
+    // Cancel any in-flight scroll animation before starting a new one
+    if (this.scrollAnimRafId !== null) {
+      cancelAnimationFrame(this.scrollAnimRafId);
+      this.scrollAnimRafId = null;
+    }
+
     if (this.scrollMode === 'jump') {
       this.scrollContainer!.scrollTop = targetPosition;
       return;
     }
     const animation = (currentTime: number) => {
+      // Stop if the manager was destroyed mid-animation
+      if (!this.scrollContainer) {
+        this.scrollAnimRafId = null;
+        return;
+      }
       this.isScrolling = true;
       if (startTime === null) startTime = currentTime;
       const timeElapsed = currentTime - startTime;
       const run = this.easeInOutQuad(timeElapsed, startPosition, distance, duration);
-      this.scrollContainer!.scrollTop = run;
+      this.scrollContainer.scrollTop = run;
       if (timeElapsed < duration) {
-        requestAnimationFrame(animation);
+        this.scrollAnimRafId = requestAnimationFrame(animation);
       } else {
-        this.scrollContainer!.scrollTop = targetPosition;
+        this.scrollContainer.scrollTop = targetPosition;
         this.isScrolling = false;
+        this.scrollAnimRafId = null;
       }
     };
-    requestAnimationFrame(animation);
+    this.scrollAnimRafId = requestAnimationFrame(animation);
   }
 
   private easeInOutQuad(t: number, b: number, c: number, d: number): number {
@@ -1693,6 +1710,12 @@ export class TimelineManager {
       window.removeEventListener('storage', this.onStorage!);
     } catch {}
     try {
+      if (this.onStorageSync && (window as any).chrome?.storage?.onChanged) {
+        (window as any).chrome.storage.onChanged.removeListener(this.onStorageSync);
+      }
+    } catch {}
+    this.onStorageSync = null;
+    try {
       this.ui.timelineBar?.removeEventListener('pointerdown', this.onPointerDown!);
     } catch {}
     try {
@@ -1746,6 +1769,22 @@ export class TimelineManager {
         cancelAnimationFrame(this.scrollRafId);
       } catch {}
       this.scrollRafId = null;
+    }
+    if (this.scrollAnimRafId !== null) {
+      try {
+        cancelAnimationFrame(this.scrollAnimRafId);
+      } catch {}
+      this.scrollAnimRafId = null;
+    }
+    if (this.showRafId !== null) {
+      try {
+        cancelAnimationFrame(this.showRafId);
+      } catch {}
+      this.showRafId = null;
+    }
+    if (this.zeroTurnsTimer) {
+      clearTimeout(this.zeroTurnsTimer);
+      this.zeroTurnsTimer = null;
     }
     try {
       this.ui.timelineBar?.remove();

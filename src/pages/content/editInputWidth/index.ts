@@ -126,7 +126,8 @@ export function startEditInputWidthAdjuster(): void {
 
   // Load initial width from storage
   chrome.storage?.sync?.get({ geminiEditInputWidth: 600 }, (res) => {
-    currentWidth = res?.geminiEditInputWidth || 600;
+    const stored = (res as { geminiEditInputWidth?: number } | undefined)?.geminiEditInputWidth;
+    currentWidth = typeof stored === 'number' && stored > 0 ? stored : 600;
     applyWidth(currentWidth);
   });
 

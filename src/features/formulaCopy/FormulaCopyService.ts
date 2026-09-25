@@ -231,20 +231,15 @@ export class FormulaCopyService {
    */
   private findDataMathInSubtree(
     root: HTMLElement,
-    currentDepth: number
+    _currentDepth: number
   ): HTMLElement | null {
-    let searchElement: HTMLElement | null = root;
-    let depth = currentDepth;
-
-    while (searchElement && depth < this.config.maxTraversalDepth) {
-      if (searchElement.hasAttribute('data-math')) {
-        return searchElement;
-      }
-      searchElement = searchElement.parentElement;
-      depth++;
+    // Search downward within the subtree (the root itself was already
+    // checked by the caller before this method is invoked)
+    try {
+      return root.querySelector<HTMLElement>('[data-math]');
+    } catch {
+      return null;
     }
-
-    return null;
   }
 
   /**

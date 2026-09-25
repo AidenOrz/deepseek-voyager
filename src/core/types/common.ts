@@ -35,11 +35,11 @@ export type TurnId = Brand<string, 'TurnId'>;
  * Storage keys - centralized for type safety
  */
 export const StorageKeys = {
-  FOLDER_DATA: 'gvFolderData',
-  TIMELINE_SCROLL_MODE: 'geminiTimelineScrollMode',
-  TIMELINE_HIDE_CONTAINER: 'geminiTimelineHideContainer',
-  TIMELINE_DRAGGABLE: 'geminiTimelineDraggable',
-  TIMELINE_POSITION: 'geminiTimelinePosition',
+  FOLDER_DATA: 'dsFolderData',
+  TIMELINE_SCROLL_MODE: 'deepseekTimelineScrollMode',
+  TIMELINE_HIDE_CONTAINER: 'deepseekTimelineHideContainer',
+  TIMELINE_DRAGGABLE: 'deepseekTimelineDraggable',
+  TIMELINE_POSITION: 'deepseekTimelinePosition',
   CHAT_WIDTH: 'geminiChatWidth',
   LANGUAGE: 'language',
 } as const;
