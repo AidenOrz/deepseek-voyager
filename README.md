@@ -1,8 +1,5 @@
 > [!NOTE]
-> ## 维护权交接：由 [@AidenOrz](https://github.com/AidenOrz) 继续维护
->
 > 原维护者因时间与精力有限已停止维护，现由 [@AidenOrz](https://github.com/AidenOrz) 接手，继续提供功能更新与兼容性修复。欢迎提交 [Issue](https://github.com/AidenOrz/deepseek-voyager/issues) / PR。
->
 > 本项目改编自 [Nagi-ovo/gemini-voyager](https://github.com/Nagi-ovo/gemini-voyager)。衷心感谢原作者 [@Nagi-ovo](https://github.com/Nagi-ovo) 的开源工作，也感谢前维护者 [@Azurboy](https://github.com/Azurboy) 与所有使用、反馈和支持本项目的朋友。
 
 # DeepSeek Voyager
@@ -38,7 +35,6 @@ DeepSeek 适配版——为 [DeepSeek](https://chat.deepseek.com) 提供时间�
 - **完整文件夹拖拽**：支持会话拖入文件夹、文件夹拖入文件夹（嵌套）、嵌套文件夹移回根目录
 - **手感优化**：拖拽高亮改用 outline（不改变布局尺寸，消除指针抖动）、拖拽期间临时关闭源元素原生 draggable 并在结束后恢复、多指针保护
 - **更紧凑的列表**：缩小列表/条目/图标/缩进间距，置顶、更多、移除按钮改为悬浮显示，标题可展示更多文字
-- 移除赞助二维码
 
 ---
 
