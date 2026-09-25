@@ -31,4 +31,5 @@ export interface DragData {
   url?: string;
   isGem?: boolean;
   gemId?: string;
+  sourceFolderId?: string; // Set when a conversation is dragged out of a folder
 }

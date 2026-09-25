@@ -47,6 +47,8 @@ export class FolderManager {
   private sideNavObserver: MutationObserver | null = null;
   private importInProgress: boolean = false; // Lock to prevent concurrent imports
   private exportInProgress: boolean = false; // Lock to prevent concurrent exports
+  private removalCheckTimers: Map<string, number> = new Map();
+  private draggableRescanTimer: number | null = null;
 
   constructor() {
     this.loadData();
@@ -89,6 +91,18 @@ export class FolderManager {
       this.setupConversationClickTracking();
       this.setupNativeConversationMenuObserver();
 
+      // 定期重扫，保证 React 重挂载的对话项始终可拖拽
+      this.startDraggableRescan();
+
+      // Page unload cleanup
+      window.addEventListener(
+        'beforeunload',
+        () => {
+          this.stopDraggableRescan();
+        },
+        { once: true }
+      );
+
       this.debug('Initialized successfully');
     } catch (error) {
       console.error('[FolderManager] Initialization error:', error);
@@ -97,12 +111,15 @@ export class FolderManager {
 
   private async waitForSidebar(): Promise<void> {
     return new Promise((resolve) => {
+      let attempts = 0;
       const checkSidebar = () => {
-        // DeepSeek 使用 .ds-scroll-area 作为侧边栏容器
-        const container = tryFindElement(DEEPSEEK_SELECTORS.sidebarContainer);
-        if (container) {
-          this.sidebarContainer = container as HTMLElement;
-          this.debug('找到侧边栏容器');
+        attempts++;
+        const container = this.resolveSidebarContainer();
+        const hasConversationLinks = !!container?.querySelector('a[href*="/a/chat/s/"]');
+        if (container && (hasConversationLinks || attempts >= 30)) {
+          // 有对话链接立即采用；15s 后仍未出现链接则退回首个候选（避免永久挂起）
+          this.sidebarContainer = container;
+          this.debug('找到侧边栏容器 (含对话链接:', hasConversationLinks, ')');
           resolve();
         } else {
           setTimeout(checkSidebar, 500);
@@ -110,6 +127,38 @@ export class FolderManager {
       };
       checkSidebar();
     });
+  }
+
+  /**
+   * DeepSeek 页面存在多个 .ds-scroll-area（侧边栏和对话区都可能使用该类名），
+   * 且混淆类名会随部署变化。必须选择"包含对话链接"的那个作为侧边栏容器，
+   * 否则对话项永远扫不到、拖拽功能失效。
+   */
+  private resolveSidebarContainer(): HTMLElement | null {
+    const candidates: HTMLElement[] = [];
+    const selectors = [
+      DEEPSEEK_SELECTORS.sidebarContainer.primary,
+      ...DEEPSEEK_SELECTORS.sidebarContainer.fallbacks,
+    ];
+    for (const selector of selectors) {
+      try {
+        document.querySelectorAll(selector).forEach((el) => {
+          if (!candidates.includes(el as HTMLElement)) {
+            candidates.push(el as HTMLElement);
+          }
+        });
+      } catch {
+        // 无效选择器（如伪类兼容性）忽略
+      }
+    }
+
+    // 优先返回包含对话链接的候选
+    for (const el of candidates) {
+      if (el.querySelector('a[href*="/a/chat/s/"]')) {
+        return el;
+      }
+    }
+    return candidates[0] || null;
   }
 
   private findRecentSection(): void {
@@ -371,7 +420,7 @@ export class FolderManager {
     convEl.draggable = true;
     convEl.addEventListener('dragstart', (e) => {
       e.stopPropagation();
-      const dragData = {
+      const dragData: DragData = {
         type: 'conversation',
         conversationId: conv.conversationId,
         title: displayTitle,
@@ -380,7 +429,7 @@ export class FolderManager {
         gemId: conv.gemId,
         sourceFolderId: folderId, // Track where it's being dragged from
       };
-      e.dataTransfer!.setData('application/json', JSON.stringify(dragData));
+      this.setDragPayload(e, dragData);
       convEl.style.opacity = '0.5';
     });
 
@@ -445,7 +494,7 @@ export class FolderManager {
       e.stopPropagation(); // CRITICAL: Prevent event bubbling to root drop zone
       element.classList.remove('gv-folder-dragover');
 
-      const data = e.dataTransfer?.getData('application/json');
+      const data = this.readDragPayload(e.dataTransfer);
       if (!data) return;
 
       try {
@@ -469,8 +518,10 @@ export class FolderManager {
   private setupRootDropZone(element: HTMLElement): void {
     element.addEventListener('dragover', (e) => {
       // Allow both folder and conversation drops on the root zone
-      const data = e.dataTransfer?.types.includes('application/json');
-      if (!data) return;
+      const types = Array.from(e.dataTransfer?.types || []);
+      const isPayloadDrag =
+        types.includes('application/json') || types.includes('text/plain');
+      if (!isPayloadDrag) return;
 
       e.preventDefault();
       e.stopPropagation(); // Prevent parent handlers from firing
@@ -498,7 +549,7 @@ export class FolderManager {
       e.stopPropagation(); // Prevent parent handlers from firing
       element.classList.remove('gv-folder-list-dragover');
 
-      const data = e.dataTransfer?.getData('application/json');
+      const data = this.readDragPayload(e.dataTransfer);
       if (!data) return;
 
       try {
@@ -590,7 +641,7 @@ export class FolderManager {
         title: folder.name,
       };
 
-      (e as DragEvent).dataTransfer?.setData('application/json', JSON.stringify(dragData));
+      this.setDragPayload(e as DragEvent, dragData);
       element.style.opacity = '0.5';
 
       this.debug('Folder drag start:', folder.name, 'canBeDragged:', this.canFolderBeDragged(folder.id));
@@ -644,11 +695,19 @@ export class FolderManager {
   }
 
   private makeConversationDraggable(element: HTMLElement): void {
+    // 防止对同一元素重复绑定（React 重挂载/重扫时跳过已打标节点）
+    if (element.dataset.dsvDraggableTag === '1') {
+      return;
+    }
+    element.dataset.dsvDraggableTag = '1';
     element.draggable = true;
     element.style.cursor = 'grab';
 
     element.addEventListener('dragstart', (e) => {
-      const title = element.querySelector('.conversation-title')?.textContent?.trim() || 'Untitled';
+      // DeepSeek: 优先用配置的标题选择器，退回元素自身文本
+      const titleEl = tryFindElement(DEEPSEEK_SELECTORS.conversationTitle, element);
+      const title =
+        titleEl?.textContent?.trim() || element.textContent?.trim() || 'Untitled';
       const conversationId = this.extractConversationId(element);
 
       // Extract URL and conversation metadata together
@@ -670,13 +729,40 @@ export class FolderManager {
         gemId: conversationData.gemId,
       };
 
-      e.dataTransfer?.setData('application/json', JSON.stringify(dragData));
+      this.setDragPayload(e, dragData);
       element.style.opacity = '0.5';
     });
 
     element.addEventListener('dragend', () => {
       element.style.opacity = '1';
     });
+  }
+
+  /**
+   * 写入拖拽载荷。同时提供 application/json 与 text/plain，
+   * 防止页面脚本或浏览器策略吞掉自定义 MIME 类型。
+   */
+  private setDragPayload(e: DragEvent, dragData: DragData): void {
+    if (!e.dataTransfer) return;
+    const payload = JSON.stringify(dragData);
+    try {
+      e.dataTransfer.setData('application/json', payload);
+    } catch { /* ignore */ }
+    try {
+      e.dataTransfer.setData('text/plain', payload);
+    } catch { /* ignore */ }
+  }
+
+  /** 读取拖拽载荷，application/json 优先，text/plain 兜底 */
+  private readDragPayload(dt: DataTransfer | null): string | null {
+    if (!dt) return null;
+    for (const type of ['application/json', 'text/plain']) {
+      try {
+        const raw = dt.getData(type);
+        if (raw) return raw;
+      } catch { /* ignore */ }
+    }
+    return null;
   }
 
   private extractConversationId(element: HTMLElement): string {
@@ -742,8 +828,8 @@ export class FolderManager {
               if (href) {
                 const conversationId = extractConversationId(href);
                 if (conversationId) {
-                  this.debug('检测到对话删除:', conversationId);
-                  this.removeConversationFromAllFolders(conversationId);
+                  this.debug('检测到对话节点移除，延迟确认:', conversationId);
+                  this.scheduleConversationRemovalCheck(conversationId);
                 }
               }
             });
@@ -756,6 +842,64 @@ export class FolderManager {
       childList: true,
       subtree: true,
     });
+  }
+
+  /**
+   * 虚拟列表 / React 重排会把对话节点"移动"（触发 removed+added 事件）。
+   * 若移除节点时立即从文件夹删除记录，会把仍在侧边栏的会话误删。
+   * 这里延迟确认：若页面上已不存在该对话的链接，才认定真的被删除。
+   */
+  private scheduleConversationRemovalCheck(conversationId: string): void {
+    const existing = this.removalCheckTimers.get(conversationId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = window.setTimeout(() => {
+      this.removalCheckTimers.delete(conversationId);
+      try {
+        const stillExists = document.querySelector(`a[href*="${conversationId}"]`);
+        if (stillExists) {
+          this.debug('对话节点只是移动/重排，跳过删除:', conversationId);
+          return;
+        }
+        this.debug('确认对话已从侧边栏删除:', conversationId);
+        this.removeConversationFromAllFolders(conversationId);
+      } catch (e) {
+        this.debug('删除确认检查失败:', e);
+      }
+    }, 800);
+    this.removalCheckTimers.set(conversationId, timer);
+  }
+
+  /**
+   * 定期重扫侧边栏对话项并为未打标的节点补充拖拽能力。
+   * React 复用/重挂载 DOM 节点时不会触发 addedNodes，
+   * 重扫保证新节点总是可拖拽（拖拽目标选择器只匹配侧边栏链接，扫描 document 安全）。
+   */
+  private startDraggableRescan(): void {
+    if (this.draggableRescanTimer !== null) return;
+    this.draggableRescanTimer = window.setInterval(() => {
+      try {
+        const items = document.querySelectorAll('a[href*="/a/chat/s/"]');
+        items.forEach((el) => {
+          const item = el as HTMLElement;
+          if (item.dataset.dsvDraggableTag !== '1') {
+            this.makeConversationDraggable(item);
+          }
+        });
+      } catch (e) {
+        this.debug('重扫对话项失败:', e);
+      }
+    }, 2000);
+  }
+
+  private stopDraggableRescan(): void {
+    if (this.draggableRescanTimer !== null) {
+      clearInterval(this.draggableRescanTimer);
+      this.draggableRescanTimer = null;
+    }
+    this.removalCheckTimers.forEach((timer) => clearTimeout(timer));
+    this.removalCheckTimers.clear();
   }
 
   /**
