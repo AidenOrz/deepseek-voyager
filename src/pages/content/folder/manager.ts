@@ -58,6 +58,8 @@ export class FolderManager {
     pointerId: number;
     startX: number;
     startY: number;
+    nativeDraggable: boolean;
+    previousUserDrag: string;
   } | null = null;
   private customDrag: {
     sourceEl: HTMLElement;
@@ -66,8 +68,11 @@ export class FolderManager {
     ghost: HTMLDivElement;
     hoverEl: HTMLElement | null;
     targetFolderId: string | null;
+    nativeDraggable: boolean;
+    previousUserDrag: string;
   } | null = null;
   private suppressNextClick = false;
+  private customDragListenersCleanup: (() => void) | null = null;
 
   constructor() {
     this.loadData();
@@ -364,7 +369,10 @@ export class FolderManager {
     // Folder header
     const folderHeader = document.createElement('div');
     folderHeader.className = 'gv-folder-item-header';
-    folderHeader.style.paddingLeft = `${level * 16 + 8}px`;
+    // Keep the folder id on the actual drop target as well as its wrapper.
+    // Pointer-based hit testing resolves the header directly.
+    folderHeader.dataset.folderId = folder.id;
+    folderHeader.style.paddingLeft = `${level * 12 + 4}px`;
 
     // Expand/collapse button
     const expandBtn = document.createElement('button');
@@ -454,7 +462,7 @@ export class FolderManager {
     convEl.dataset.conversationId = conv.conversationId;
     convEl.dataset.folderId = folderId;
     // Increase indentation for conversations under folders
-    convEl.style.paddingLeft = `${level * 16 + 24}px`; // More indentation for tree structure
+    convEl.style.paddingLeft = `${level * 12 + 18}px`; // Compact indentation for tree structure
 
     // Try to sync title from native conversation
     const syncedTitle = this.syncConversationTitleFromNative(conv.conversationId);
@@ -868,56 +876,137 @@ export class FolderManager {
   private handleConversationPointerDown(e: PointerEvent, element: HTMLElement): void {
     if (e.button !== 0 || this.customDrag || this.pendingPointerDrag) return;
     const sourceFolderId = element.dataset.folderId || undefined;
+    this.armPointerDrag(e, element, this.buildConversationDragData(element, sourceFolderId));
+  }
+
+  private armPointerDrag(e: PointerEvent, sourceEl: HTMLElement, dragData: DragData): void {
+    const nativeDraggable = sourceEl.draggable;
+    const previousUserDrag = sourceEl.style.getPropertyValue('-webkit-user-drag');
+    sourceEl.draggable = false;
+    sourceEl.style.setProperty('-webkit-user-drag', 'none');
     this.pendingPointerDrag = {
-      sourceEl: element,
-      dragData: this.buildConversationDragData(element, sourceFolderId),
+      sourceEl,
+      dragData,
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
+      nativeDraggable,
+      previousUserDrag,
     };
+  }
+
+  private restoreNativeDragging(
+    sourceEl: HTMLElement,
+    nativeDraggable: boolean,
+    previousUserDrag: string
+  ): void {
+    sourceEl.draggable = nativeDraggable;
+    if (previousUserDrag) {
+      sourceEl.style.setProperty('-webkit-user-drag', previousUserDrag);
+    } else {
+      sourceEl.style.removeProperty('-webkit-user-drag');
+    }
+  }
+
+  private cancelPendingPointerDrag(): void {
+    const pending = this.pendingPointerDrag;
+    if (!pending) return;
+    this.restoreNativeDragging(pending.sourceEl, pending.nativeDraggable, pending.previousUserDrag);
+    this.pendingPointerDrag = null;
   }
 
   /** 安装全局指针拖拽监听（仅一次） */
   private ensureCustomDragListeners(): void {
-    const flag = (this as any)._customDragListenersInstalled;
-    if (flag) return;
-    (this as any)._customDragListenersInstalled = true;
+    if (this.customDragListenersCleanup) return;
 
     // 自定义拖拽进行中时抑制原生拖拽，避免两套机制同时生效
-    document.addEventListener(
-      'dragstart',
-      ((e: DragEvent) => {
-        if (this.customDrag) e.preventDefault();
-      }) as EventListener,
-      true
-    );
-
-    document.addEventListener('pointermove', (e) => this.handlePointerMove(e as PointerEvent));
-    document.addEventListener('pointerup', (e) => this.handlePointerUp(e as PointerEvent));
-    document.addEventListener('pointercancel', () => {
+    const onDragStart = (e: Event) => {
+      if (this.customDrag || this.pendingPointerDrag) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    const onPointerDown = (e: Event) => this.handlePointerDownCapture(e as PointerEvent);
+    const onPointerMove = (e: Event) => this.handlePointerMove(e as PointerEvent);
+    const onPointerUp = (e: Event) => this.handlePointerUp(e as PointerEvent);
+    const onPointerCancel = () => {
       if (this.customDrag) this.cleanupCustomDrag();
-      this.pendingPointerDrag = null;
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.customDrag) this.cleanupCustomDrag();
-    });
+      this.cancelPendingPointerDrag();
+    };
+    const onKeyDown = (e: Event) => {
+      if ((e as KeyboardEvent).key === 'Escape') {
+        if (this.customDrag) this.cleanupCustomDrag();
+        this.cancelPendingPointerDrag();
+      }
+    };
+    const onClick = (e: Event) => {
+      if (this.suppressNextClick) {
+        this.suppressNextClick = false;
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    };
+
+    document.addEventListener('dragstart', onDragStart, true);
+
+    // Capture pointer events before DeepSeek's document handlers can stop them.
+    // This is the part that makes the fallback independent of the page's DnD code.
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointermove', onPointerMove, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerCancel, true);
+    window.addEventListener('keydown', onKeyDown);
     // 拖拽投放后拦截一次 click，防止原生 <a> 触发导航
-    document.addEventListener(
-      'click',
-      ((e: MouseEvent) => {
-        if (this.suppressNextClick) {
-          this.suppressNextClick = false;
-          e.stopPropagation();
-          e.preventDefault();
-        }
-      }) as EventListener,
-      true
-    );
+    document.addEventListener('click', onClick, true);
+
+    this.customDragListenersCleanup = () => {
+      document.removeEventListener('dragstart', onDragStart, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('pointercancel', onPointerCancel, true);
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('click', onClick, true);
+      this.customDragListenersCleanup = null;
+    };
+  }
+
+  /**
+   * Arm pointer dragging from the capture phase so page handlers cannot swallow
+   * the initial pointerdown before the element-level listeners see it.
+   */
+  private handlePointerDownCapture(e: PointerEvent): void {
+    if (e.button !== 0 || this.customDrag || this.pendingPointerDrag) return;
+
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target || target.closest('button, input, textarea, select, [contenteditable="true"]')) {
+      return;
+    }
+
+    const conversation = target.closest(
+      '.gv-folder-conversation, a[href*="/a/chat/s/"]'
+    ) as HTMLElement | null;
+    if (conversation) {
+      this.handleConversationPointerDown(e, conversation);
+      return;
+    }
+
+    const folderHeader = target.closest('.gv-folder-item-header') as HTMLElement | null;
+    if (!folderHeader || folderHeader.draggable !== true) return;
+
+    const folderId = folderHeader.dataset.folderId;
+    if (!folderId || !this.canFolderBeDragged(folderId)) return;
+
+    const folder = this.data.folders.find((item) => item.id === folderId);
+    if (!folder) return;
+
+    this.armPointerDrag(e, folderHeader, { type: 'folder', folderId, title: folder.name });
   }
 
   private handlePointerMove(e: PointerEvent): void {
     if (this.customDrag) {
       if (e.pointerId !== this.customDrag.pointerId) return;
+      e.preventDefault();
       this.moveGhost(e.clientX, e.clientY);
       this.updateCustomDragHover(e.clientX, e.clientY);
       return;
@@ -930,23 +1019,24 @@ export class FolderManager {
 
   private handlePointerUp(e: PointerEvent): void {
     if (this.customDrag) {
+      if (e.pointerId !== this.customDrag.pointerId) return;
       const drag = this.customDrag;
       const folderId = drag.targetFolderId;
       const dragData = drag.dragData;
       this.cleanupCustomDrag();
+      // Once movement crossed the drag threshold, do not let release become a link click.
+      this.suppressNextClick = true;
+      window.setTimeout(() => {
+        this.suppressNextClick = false;
+      }, 0);
       if (folderId) {
-        // 抑制随后的 click（原生 <a> 会触发导航）
-        this.suppressNextClick = true;
-        window.setTimeout(() => {
-          this.suppressNextClick = false;
-        }, 0);
         this.debug('自定义拖拽投放:', dragData.title, '→', folderId);
-        this.addConversationToFolder(folderId, dragData);
+        this.applyCustomDrop(folderId, dragData);
       }
       return;
     }
     if (this.pendingPointerDrag && e.pointerId === this.pendingPointerDrag.pointerId) {
-      this.pendingPointerDrag = null;
+      this.cancelPendingPointerDrag();
     }
   }
 
@@ -987,6 +1077,8 @@ export class FolderManager {
       ghost,
       hoverEl: null,
       targetFolderId: null,
+      nativeDraggable: pending.nativeDraggable,
+      previousUserDrag: pending.previousUserDrag,
     };
     this.moveGhost(e.clientX, e.clientY);
     this.updateCustomDragHover(e.clientX, e.clientY);
@@ -1018,9 +1110,10 @@ export class FolderManager {
       return { folderId: target.dataset.folderId || null, highlightEl: target };
     }
     if (target.classList.contains('gv-folder-conversation')) {
+      const folderItem = target.closest('.gv-folder-item') as HTMLElement | null;
       return {
-        folderId: target.dataset.folderId || null,
-        highlightEl: (target.closest('.gv-folder-item-header') as HTMLElement) || null,
+        folderId: target.dataset.folderId || folderItem?.dataset.folderId || null,
+        highlightEl: folderItem?.querySelector('.gv-folder-item-header') as HTMLElement | null,
       };
     }
     // 列表 / 顶部 header / 容器 = 根区域
@@ -1048,12 +1141,31 @@ export class FolderManager {
 
   private cleanupCustomDrag(): void {
     if (!this.customDrag) return;
+    const { sourceEl, nativeDraggable, previousUserDrag } = this.customDrag;
     try {
       this.customDrag.hoverEl?.classList.remove('gv-folder-dragover');
       this.customDrag.ghost.remove();
+      this.restoreNativeDragging(sourceEl, nativeDraggable, previousUserDrag);
     } catch { /* ignore */ }
     this.customDrag = null;
     document.body.style.userSelect = '';
+  }
+
+  private applyCustomDrop(folderId: string, dragData: DragData): void {
+    if (dragData.type === 'folder') {
+      if (folderId === ROOT_CONVERSATIONS_ID) {
+        this.moveFolderToRoot(dragData);
+      } else {
+        this.addFolderToFolder(folderId, dragData);
+      }
+      return;
+    }
+
+    if (folderId === ROOT_CONVERSATIONS_ID) {
+      this.addConversationToFolder(ROOT_CONVERSATIONS_ID, dragData);
+    } else {
+      this.addConversationToFolder(folderId, dragData);
+    }
   }
 
   private extractConversationId(element: HTMLElement): string {
@@ -1235,7 +1347,8 @@ export class FolderManager {
   destroy(): void {
     this.stopDraggableRescan();
     this.cleanupCustomDrag();
-    this.pendingPointerDrag = null;
+    this.cancelPendingPointerDrag();
+    this.customDragListenersCleanup?.();
     try {
       this.conversationListObserver?.disconnect();
     } catch { /* ignore */ }

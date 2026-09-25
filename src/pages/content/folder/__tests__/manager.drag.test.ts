@@ -98,11 +98,13 @@ describe('FolderManager 自定义指针拖拽', () => {
 
     const link = document.querySelector(`a[href*="${UUID_A}"]`) as HTMLElement;
     firePointer(link, 'pointerdown', 10, 10, 1);
+    expect(link.draggable).toBe(false);
     firePointer(document, 'pointermove', 60, 60, 1); // 超过阈值，开始拖拽
     expect((manager as any).customDrag).not.toBeNull();
     expect(document.querySelector('.gv-drag-ghost')).not.toBeNull();
 
     firePointer(document, 'pointerup', 70, 65, 1);
+    expect(link.draggable).toBe(true);
 
     const contents = (manager as any).data.folderContents['f1'];
     expect(contents.some((c: any) => c.conversationId === UUID_A)).toBe(true);
@@ -112,6 +114,38 @@ describe('FolderManager 自定义指针拖拽', () => {
     // 拖拽结束：幽灵与状态清理
     expect((manager as any).customDrag).toBeNull();
     expect(document.querySelector('.gv-drag-ghost')).toBeNull();
+  });
+
+  it('页面在 document 捕获阶段阻断事件时仍可拖入文件夹', async () => {
+    const manager: any = new FolderManager();
+    await manager.init();
+    (manager as any).stopDraggableRescan();
+    current = manager;
+
+    addFolderViaManager(manager, 'f1', '测试夹');
+    const header = document.querySelector('.gv-folder-item-header') as HTMLElement;
+    (manager as any).resolveDropTarget = () => ({ folderId: 'f1', highlightEl: header });
+
+    const block = (event: Event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener('pointerdown', block, true);
+    document.addEventListener('pointermove', block, true);
+    document.addEventListener('pointerup', block, true);
+
+    try {
+      const link = document.querySelector(`a[href*="${UUID_A}"]`) as HTMLElement;
+      firePointer(link, 'pointerdown', 10, 10, 4);
+      firePointer(document, 'pointermove', 60, 60, 4);
+      firePointer(document, 'pointerup', 70, 65, 4);
+    } finally {
+      document.removeEventListener('pointerdown', block, true);
+      document.removeEventListener('pointermove', block, true);
+      document.removeEventListener('pointerup', block, true);
+    }
+
+    expect((manager as any).data.folderContents.f1.some((c: any) => c.conversationId === UUID_A)).toBe(true);
   });
 
   it('文件夹内会话移动到另一文件夹（从源文件夹移除）', async () => {
@@ -185,5 +219,66 @@ describe('FolderManager 自定义指针拖拽', () => {
 
     expect((manager as any).data.folderContents['f1'].length).toBe(0);
     expect((manager as any).customDrag).toBeNull();
+  });
+
+  it('文件夹可绕过原生 DnD 拖入另一文件夹', async () => {
+    const manager: any = new FolderManager();
+    await manager.init();
+    (manager as any).stopDraggableRescan();
+    current = manager;
+
+    addFolderViaManager(manager, 'f1', '源夹');
+    addFolderViaManager(manager, 'f2', '目标夹');
+
+    const sourceHeader = document.querySelector(
+      '.gv-folder-item[data-folder-id="f1"] > .gv-folder-item-header'
+    ) as HTMLElement;
+    const targetHeader = document.querySelector(
+      '.gv-folder-item[data-folder-id="f2"] > .gv-folder-item-header'
+    ) as HTMLElement;
+    expect(sourceHeader?.draggable).toBe(true);
+    expect(targetHeader).not.toBeNull();
+
+    (manager as any).resolveDropTarget = () => ({
+      folderId: 'f2',
+      highlightEl: targetHeader,
+    });
+
+    firePointer(sourceHeader, 'pointerdown', 10, 10, 2);
+    firePointer(document, 'pointermove', 60, 60, 2);
+    expect((manager as any).customDrag?.dragData.type).toBe('folder');
+    firePointer(document, 'pointerup', 70, 65, 2);
+
+    expect((manager as any).data.folders.find((f: any) => f.id === 'f1').parentId).toBe('f2');
+  });
+
+  it('嵌套文件夹可通过指针拖拽移回根目录', async () => {
+    const manager: any = new FolderManager();
+    await manager.init();
+    (manager as any).stopDraggableRescan();
+    current = manager;
+
+    manager.data.folders.push(
+      { id: 'parent', name: '父夹', parentId: null, isExpanded: true, createdAt: 1, updatedAt: 1 },
+      { id: 'child', name: '子夹', parentId: 'parent', isExpanded: true, createdAt: 1, updatedAt: 1 }
+    );
+    manager.data.folderContents.parent = [];
+    manager.data.folderContents.child = [];
+    manager.refresh();
+
+    const childHeader = document.querySelector(
+      '.gv-folder-item[data-folder-id="child"] > .gv-folder-item-header'
+    ) as HTMLElement;
+    expect(childHeader?.draggable).toBe(true);
+    (manager as any).resolveDropTarget = () => ({
+      folderId: '__root_conversations__',
+      highlightEl: document.querySelector('.gv-folder-list'),
+    });
+
+    firePointer(childHeader, 'pointerdown', 10, 10, 3);
+    firePointer(document, 'pointermove', 60, 60, 3);
+    firePointer(document, 'pointerup', 70, 65, 3);
+
+    expect((manager as any).data.folders.find((f: any) => f.id === 'child').parentId).toBeNull();
   });
 });

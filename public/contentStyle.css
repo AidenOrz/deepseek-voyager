@@ -1307,8 +1307,8 @@ html.dark .dsv-export-format-option,
 
 /* Folder Container */
 .gv-folder-container {
-  margin-bottom: 16px;
-  padding: 8px 8px 8px 12px;
+  margin-bottom: 8px;
+  padding: 4px 4px 4px 6px;
   /* Ensure alignment with Recent section */
   margin-left: 0;
 }
@@ -1318,8 +1318,8 @@ html.dark .dsv-export-format-option,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px 8px 0;
-  margin-bottom: 8px;
+  padding: 4px 8px 4px 0;
+  margin-bottom: 4px;
   border-radius: 8px;
   transition:
     background-color 0.2s,
@@ -1328,7 +1328,8 @@ html.dark .dsv-export-format-option,
 
 .gv-folder-header.gv-folder-list-dragover {
   background-color: var(--folder-dragover-bg);
-  border: 2px dashed var(--folder-dragover-border);
+  outline: 2px dashed var(--folder-dragover-border);
+  outline-offset: -2px;
 }
 
 .gv-folder-header .title-container {
@@ -1348,8 +1349,8 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-add-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: none;
   background: transparent;
@@ -1372,9 +1373,9 @@ html.dark .dsv-export-format-option,
 .gv-folder-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-height: 40px; /* Ensure there's always a drop zone even when empty */
-  padding: 4px;
+  gap: 1px;
+  min-height: 32px; /* Ensure there's always a drop zone even when empty */
+  padding: 2px;
   border-radius: 8px;
   transition:
     background-color 0.2s,
@@ -1383,7 +1384,8 @@ html.dark .dsv-export-format-option,
 
 .gv-folder-list-dragover {
   background-color: var(--folder-dragover-bg);
-  border: 2px dashed var(--folder-dragover-border);
+  outline: 2px dashed var(--folder-dragover-border);
+  outline-offset: -2px;
 }
 
 /* Folder Item */
@@ -1395,8 +1397,9 @@ html.dark .dsv-export-format-option,
 .gv-folder-item-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 4px;
+  padding: 4px 6px;
+  min-height: 28px;
   border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.2s;
@@ -1409,7 +1412,8 @@ html.dark .dsv-export-format-option,
 
 .gv-folder-item-header.gv-folder-dragover {
   background-color: var(--folder-dragover-bg);
-  border: 2px dashed var(--folder-dragover-border);
+  outline: 2px dashed var(--folder-dragover-border);
+  outline-offset: -2px;
 }
 
 .gv-folder-item-header[draggable='true'] {
@@ -1421,8 +1425,8 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-expand-btn {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: none;
   background: transparent;
   color: var(--folder-icon-color);
@@ -1435,18 +1439,19 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-expand-btn .google-symbols {
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .gv-folder-icon {
-  font-size: 20px;
+  font-size: 18px;
   color: var(--folder-icon-color);
   flex-shrink: 0;
 }
 
 .gv-folder-name {
   flex: 1;
-  font-size: 14px;
+  min-width: 0;
+  font-size: 13px;
   color: var(--folder-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1455,8 +1460,11 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-pin-btn {
-  width: 24px;
-  height: 24px;
+  position: absolute;
+  top: 4px;
+  right: 24px;
+  width: 20px;
+  height: 20px;
   border: none;
   background: transparent;
   color: var(--folder-icon-color);
@@ -1470,12 +1478,15 @@ html.dark .dsv-export-format-option,
     opacity 0.2s,
     background-color 0.2s;
   flex-shrink: 0;
-  margin-left: auto;
-  margin-right: 4px;
+  margin: 0;
 }
 
 .gv-folder-item-header:hover .gv-folder-pin-btn {
   opacity: 1;
+}
+
+.gv-folder-item-header:hover .gv-folder-name {
+  padding-right: 44px;
 }
 
 .gv-folder-pin-btn:hover {
@@ -1483,12 +1494,15 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-pin-btn .google-symbols {
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .gv-folder-actions-btn {
-  width: 24px;
-  height: 24px;
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
   border: none;
   background: transparent;
   color: var(--folder-icon-color);
@@ -1513,23 +1527,24 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-folder-actions-btn .google-symbols {
-  font-size: 18px;
+  font-size: 16px;
 }
 
 /* Folder Content (conversations and subfolders) */
 .gv-folder-content {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-top: 2px;
+  gap: 1px;
+  margin-top: 1px;
 }
 
 /* Conversation Item in Folder */
 .gv-folder-conversation {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 4px;
+  padding: 3px 6px;
+  min-height: 26px;
   border-radius: 8px;
   cursor: pointer;
   transition:
@@ -1552,9 +1567,9 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-conversation-icon {
-  font-size: 13px !important;
-  width: 13px !important;
-  height: 13px !important;
+  font-size: 12px !important;
+  width: 12px !important;
+  height: 12px !important;
   color: var(--folder-icon-color);
   flex-shrink: 0;
   display: inline-flex;
@@ -1570,7 +1585,8 @@ html.dark .dsv-export-format-option,
 
 .gv-conversation-title {
   flex: 1;
-  font-size: 14px;
+  min-width: 0;
+  font-size: 13px;
   color: var(--folder-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1578,9 +1594,12 @@ html.dark .dsv-export-format-option,
 }
 
 .gv-conversation-remove-btn {
-  min-width: 24px;
-  width: 24px;
-  height: 24px;
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
   border: none;
   background: transparent;
   color: var(--folder-icon-color);
@@ -1594,11 +1613,15 @@ html.dark .dsv-export-format-option,
     opacity 0.2s,
     background-color 0.2s;
   flex-shrink: 0;
-  margin-left: 4px;
+  margin: 0;
 }
 
 .gv-folder-conversation:hover .gv-conversation-remove-btn {
   opacity: 1;
+}
+
+.gv-folder-conversation:hover .gv-conversation-title {
+  padding-right: 24px;
 }
 
 .gv-conversation-remove-btn:hover {
