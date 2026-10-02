@@ -122,6 +122,14 @@ export class TimelineManager {
   private onBarPointerMove: ((ev: PointerEvent) => void) | null = null;
   private onBarPointerUp: ((ev: PointerEvent) => void) | null = null;
   private isInitializing = false;
+  // init() 是长异步流程（逐个等待候选选择器），destroy() 后必须能在 await 检查点退出，
+  // 否则会在销毁后继续注入 UI / 挂监听器（快速切换会话时的幽灵时间轴）
+  private destroyed = false;
+  // rect.top -> 滚动内容坐标 的换算基准，由 computeScrollBase() 按轮次刷新
+  private scrollBase = 0;
+  // DeepSeek 官方右缘导航条（几何检测），null 表示未检出
+  private nativeOverlayLeft: number | null = null;
+  private nativeOverlayRetryTimer: number | null = null;
 
   async init(): Promise<void> {
     if (this.isInitializing) {
@@ -132,6 +140,10 @@ export class TimelineManager {
     console.log('[Timeline] 开始初始化');
     
     const ok = await this.findCriticalElements();
+    if (this.destroyed) {
+      this.isInitializing = false;
+      return;
+    }
     if (!ok) {
       this.isInitializing = false;
       return;
@@ -158,6 +170,7 @@ export class TimelineManager {
             deepseekTimelinePosition: null,
           },
           (res: any) => {
+            if (this.destroyed) return;
             const m = res?.deepseekTimelineScrollMode;
             if (m === 'flow' || m === 'jump') this.scrollMode = m;
             this.hideContainer = !!res?.deepseekTimelineHideContainer;
@@ -202,7 +215,12 @@ export class TimelineManager {
     // 初始化完成后，立即计算并渲染时间轴节点
     console.log('[Timeline] init: 准备首次渲染时间轴节点');
     this.recalculateAndRenderMarkers();
-    
+
+    // 检测 DeepSeek 官方右缘导航条并让位（官方条类名混淆，按几何特征识别）
+    this.scanNativeOverlay();
+    this.applyBarOffsetForNativeOverlay();
+    if (this.nativeOverlayLeft === null) this.scheduleNativeOverlayRetry();
+
     this.isInitializing = false;
     console.log('[Timeline] 初始化完成');
   }
@@ -273,6 +291,8 @@ export class TimelineManager {
     for (const sel of candidates) {
       console.log('[Timeline] 尝试选择器:', sel);
       firstTurn = await this.waitForElement(sel, 4000);
+      // 等待期间实例可能已被销毁（快速切换会话），及时退出避免销毁后继续注入
+      if (this.destroyed) return false;
       if (firstTurn) {
         this.userTurnSelector = sel;
         matchedSelector = sel;
@@ -532,7 +552,9 @@ export class TimelineManager {
     const seen = new Set<string>();
     const out: HTMLElement[] = [];
     for (const el of elements) {
-      const offsetFromStart = (el.offsetTop || 0) - firstTurnOffset;
+      // 与 firstTurnOffset 同一坐标系（contentTop），offsetTop 依赖 offsetParent，
+      // 不同消息层级结构下可能取值相同导致同文消息被误去重
+      const offsetFromStart = this.contentTop(el) - firstTurnOffset;
       const key = `${this.normalizeText(el.textContent || '')}|${Math.round(offsetFromStart)}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -558,12 +580,106 @@ export class TimelineManager {
       : 12;
   }
 
-  private ensureTurnId(el: Element, index: number): string {
+  /**
+   * 刷新本轮布局读取用的坐标基准。
+   * 内容坐标（滚动容器内容系）= getBoundingClientRect().top - scrollBase。
+   * 内层滚动容器：base = 容器视口顶 - scrollTop；根滚动器（html/body）的盒子
+   * 本身随文档滚动（rect.top 已含 -scrollTop），base = -scrollTop。
+   * 所有偏移换算必须经由同一基准，否则轨道滑块映射与激活判定会互相错位。
+   */
+  private computeScrollBase(): void {
+    const c = this.scrollContainer;
+    if (!c) {
+      this.scrollBase = 0;
+      return;
+    }
+    const s = c.scrollTop || 0;
+    const isRoot =
+      c === document.scrollingElement ||
+      c === (document.documentElement as HTMLElement) ||
+      c === (document.body as HTMLElement);
+    this.scrollBase = isRoot ? -s : c.getBoundingClientRect().top - s;
+  }
+
+  private contentTop(el: HTMLElement): number {
+    return el.getBoundingClientRect().top - this.scrollBase;
+  }
+
+  /** 识别 DeepSeek 官方右缘导航条并返回其左缘 x；未检出返回 null。 */
+  private scanNativeOverlay(): void {
+    this.nativeOverlayLeft = this.detectNativeOverlayLeft();
+  }
+
+  /** 官方条存在时把时间轴左移让位；用户保存过的自定义位置(left/top)会覆盖 right，无需特判。 */
+  private applyBarOffsetForNativeOverlay(): void {
+    if (!this.ui.timelineBar || this.nativeOverlayLeft === null) return;
+    const gap = 10;
+    const right = Math.round(window.innerWidth - this.nativeOverlayLeft + gap);
+    if (right > 15) this.ui.timelineBar.style.right = `${right}px`;
+  }
+
+  private scheduleNativeOverlayRetry(): void {
+    if (this.nativeOverlayRetryTimer || this.destroyed) return;
+    this.nativeOverlayRetryTimer = window.setTimeout(() => {
+      this.nativeOverlayRetryTimer = null;
+      if (this.destroyed) return;
+      this.scanNativeOverlay();
+      this.applyBarOffsetForNativeOverlay();
+    }, 8000);
+  }
+
+  /**
+   * 官方条类名随部署轮换，只能按几何特征识别：
+   * fixed/absolute、宽 16~64、高 80~600、贴右缘 60px 内、垂直居中区域、与时间轴水平重叠。
+   */
+  private detectNativeOverlayLeft(): number | null {
+    const bar = this.ui.timelineBar;
+    if (!bar) return null;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const barRect = bar.getBoundingClientRect();
+    let found: number | null = null;
+    const all = document.querySelectorAll('body *');
+    for (const el of all) {
+      if (
+        (el as HTMLElement).closest(
+          '.gemini-timeline-bar, .timeline-left-slider, .timeline-tooltip'
+        )
+      )
+        continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 16 || r.width > 64) continue;
+      if (r.height < 80 || r.height > 600) continue;
+      if (r.right < vw - 60 || r.right > vw + 1) continue;
+      const cy = r.top + r.height / 2;
+      if (cy < vh * 0.2 || cy > vh * 0.8) continue;
+      if (r.left >= barRect.right || r.right <= barRect.left) continue;
+      const st = getComputedStyle(el);
+      if (st.position !== 'fixed' && st.position !== 'absolute') continue;
+      if (st.visibility === 'hidden' || st.display === 'none' || +st.opacity === 0) continue;
+      if (found === null || r.left < found) found = r.left;
+    }
+    return found;
+  }
+
+  /**
+   * 稳定 turn id：内容 hash 为主、同文消息按出现序消歧，不含位置 index。
+   * 旧方案 `u-${index}-${hash}` 在消息编辑/删除后全体位移，星标随 id 漂移丢失。
+   * 已缓存的 dataset.turnId 优先沿用，保证单次会话内 id 不变。
+   */
+  private ensureTurnId(el: Element, index: number, siblingTexts: string[]): string {
     const asEl = el as HTMLElement & { dataset?: DOMStringMap & { turnId?: string } };
     let id = (asEl.dataset && (asEl.dataset as any).turnId) || '';
     if (!id) {
-      const basis = this.normalizeText(asEl.textContent || '') || `user-${index}`;
-      id = `u-${index}-${hashString(basis)}`;
+      const text = siblingTexts[index] || '';
+      const basis = text || `user-${index}`;
+      let occurrence = 0;
+      if (text) {
+        for (let i = 0; i < index; i++) {
+          if (siblingTexts[i] === text) occurrence++;
+        }
+      }
+      id = occurrence > 0 ? `u-${hashString(basis)}-${occurrence}` : `u-${hashString(basis)}`;
       try {
         (asEl.dataset as any).turnId = id;
       } catch {}
@@ -656,6 +772,7 @@ export class TimelineManager {
   }
 
   private recalculateAndRenderMarkers = (): void => {
+    if (this.destroyed) return;
     if (
       !this.conversationContainer ||
       !this.ui.timelineBar ||
@@ -706,25 +823,33 @@ export class TimelineManager {
       return;
     }
 
-    // DeepSeek: 使用 getBoundingClientRect 来获取元素在页面上的实际位置
-    // 因为 offsetTop 相对于 offsetParent，而不是滚动容器
-    const firstRect = (allEls[0] as HTMLElement).getBoundingClientRect();
-    const firstTurnOffset = firstRect.top + (this.scrollContainer?.scrollTop || 0);
-    
+    // DeepSeek: 消息在滚动内容中的位置统一经 scrollBase 换算，
+    // 与 computeActiveByScroll / syncTimelineTrackToMain 保持同一坐标系
+    this.computeScrollBase();
+    const firstTurnOffset = this.contentTop(allEls[0] as HTMLElement);
+
     console.log('[Timeline] recalculate: dedupeByTextAndOffset 前 =', allEls.length);
     allEls = this.dedupeByTextAndOffset(allEls, firstTurnOffset);
     console.log('[Timeline] recalculate: dedupeByTextAndOffset 后 =', allEls.length);
     console.log('[Timeline] recalculate: 最终将创建', allEls.length, '个时间轴节点');
+    if (allEls.length === 0) {
+      this.markers = [];
+      this.markerMap.clear();
+      return;
+    }
 
     let contentSpan: number;
     if (allEls.length < 2) {
       contentSpan = 1;
     } else {
-      const lastRect = (allEls[allEls.length - 1] as HTMLElement).getBoundingClientRect();
-      const lastTurnOffset = lastRect.top + (this.scrollContainer?.scrollTop || 0);
-      contentSpan = lastTurnOffset - firstTurnOffset;
+      const lastTurnOffset = this.contentTop(allEls[allEls.length - 1] as HTMLElement);
+      // 懒加载适配：分母计入滚动容器总高度（视口外尚未渲染的消息也占份额）。
+      // 只按"最后一条已渲染消息"取跨度时，初期少数消息会被拉伸到整条时间轴，
+      // 后续消息渲染后全体节点跳位。
+      const sc = this.scrollContainer as HTMLElement;
+      const scrollEnd = sc.scrollHeight - (sc.clientHeight || 0) * 0.55;
+      contentSpan = Math.max(1, Math.max(lastTurnOffset, scrollEnd) - firstTurnOffset);
     }
-    if (contentSpan <= 0) contentSpan = 1;
     this.firstUserTurnOffset = firstTurnOffset;
     this.contentSpanPx = contentSpan;
 
@@ -733,25 +858,23 @@ export class TimelineManager {
     console.log('[Timeline] contentSpan =', contentSpan, 'px');
     
     this.markerMap.clear();
+    const siblingTexts = allEls.map((el) => this.normalizeText(el.textContent || ''));
     this.markers = Array.from(allEls).map((el, idx) => {
       const element = el as HTMLElement;
-      const rect = element.getBoundingClientRect();
-      const elementOffset = rect.top + (this.scrollContainer?.scrollTop || 0);
-      const offsetFromStart = elementOffset - firstTurnOffset;
+      const offsetFromStart = this.contentTop(element) - firstTurnOffset;
       let n = offsetFromStart / contentSpan;
       n = Math.max(0, Math.min(1, n));
-      
+
       // 详细日志
       console.log(`[Timeline] 节点 ${idx + 1}:`, {
-        rectTop: rect.top,
+        rectTop: element.getBoundingClientRect().top,
         scrollTop: this.scrollContainer?.scrollTop || 0,
-        绝对位置: elementOffset,
         offsetFromStart: offsetFromStart,
         相对位置n: n,
-        文本预览: element.textContent?.substring(0, 20) + '...'
+        文本预览: siblingTexts[idx].substring(0, 20) + '...'
       });
-      
-      const id = this.ensureTurnId(element, idx);
+
+      const id = this.ensureTurnId(element, idx, siblingTexts);
       const m = {
         id,
         element,
@@ -818,9 +941,10 @@ export class TimelineManager {
         return;
       }
       const targetId = dot.dataset.targetTurnId!;
+      // targetId 优先沿用宿主 DOM 上已有的 dataset.turnId，值不可信，必须转义
       const targetElement =
         (this.conversationContainer!.querySelector(
-          `[data-turn-id="${targetId}"]`
+          `[data-turn-id="${CSS.escape(targetId)}"]`
         ) as HTMLElement | null) ||
         this.markers.find((m) => m.id === targetId)?.element ||
         null;
@@ -947,7 +1071,7 @@ export class TimelineManager {
     this.ui.slider?.addEventListener('pointerleave', this.onSliderLeave);
 
     this.onBarPointerDown = (ev: PointerEvent) => {
-      if ((ev.target as HTMLElement).closest('.timeline-dot, .timeline-thumb')) {
+      if ((ev.target as HTMLElement).closest('.timeline-dot')) {
         return;
       }
       this.barDragging = true;
@@ -1356,14 +1480,12 @@ export class TimelineManager {
 
   private computeActiveByScroll(): void {
     if (!this.scrollContainer || this.markers.length === 0) return;
-    const containerRect = this.scrollContainer.getBoundingClientRect();
-    const scrollTop = this.scrollContainer.scrollTop;
-    const ref = scrollTop + this.scrollContainer.clientHeight * 0.45;
+    this.computeScrollBase();
+    const ref = this.scrollContainer.scrollTop + this.scrollContainer.clientHeight * 0.45;
     let activeId = this.markers[0].id;
     for (let i = 0; i < this.markers.length; i++) {
-      const m = this.markers[i];
-      const top = m.element.getBoundingClientRect().top - containerRect.top + scrollTop;
-      if (top <= ref) activeId = m.id;
+      const top = this.contentTop(this.markers[i].element);
+      if (top <= ref) activeId = this.markers[i].id;
       else break;
     }
     if (this.activeTurnId !== activeId) {
@@ -1680,6 +1802,12 @@ export class TimelineManager {
   }
 
   destroy(): void {
+    // 先置标志：让 init() 在下一个 await 检查点退出，不再注入 UI / 挂监听器
+    this.destroyed = true;
+    if (this.nativeOverlayRetryTimer) {
+      clearTimeout(this.nativeOverlayRetryTimer);
+      this.nativeOverlayRetryTimer = null;
+    }
     // Ensure draggable listeners are removed
     try {
       this.toggleDraggable(false);
