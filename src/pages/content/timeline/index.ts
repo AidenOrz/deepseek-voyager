@@ -13,14 +13,16 @@ let routeListenersAttached = false;
 let activeObservers: MutationObserver[] = [];
 let cleanupHandlers: (() => void)[] = [];
 let isInitializing = false;
+// 记录在途 init 对应的 URL：同一 URL 的重复触发直接跳过，URL 变化则销毁重建
+let initStartedUrl = '';
 
 function initializeTimeline(): void {
-  // 防止重复初始化
-  if (isInitializing) {
+  if (isInitializing && location.href === initStartedUrl) {
     console.log('[Timeline] 已在初始化中，跳过重复调用');
     return;
   }
-  
+  // URL 已变化：销毁在途/旧实例。其 init() 会在下一个 await 检查点
+  // 通过 destroyed 标志退出，不会在销毁后继续注入 UI 或挂监听器。
   if (timelineManagerInstance) {
     try {
       timelineManagerInstance.destroy();
@@ -36,18 +38,25 @@ function initializeTimeline(): void {
   try {
     document.getElementById('gemini-timeline-tooltip')?.remove();
   } catch {}
-  
+
   isInitializing = true;
-  timelineManagerInstance = new TimelineManager();
-  timelineManagerInstance
+  initStartedUrl = location.href;
+  const instance = new TimelineManager();
+  timelineManagerInstance = instance;
+  instance
     .init()
     .then(() => {
-      isInitializing = false;
-      console.log('[Timeline/index] 初始化成功完成');
+      // 若该实例已被更新的初始化取代，不得替它复位门禁标志
+      if (timelineManagerInstance === instance) {
+        isInitializing = false;
+        console.log('[Timeline/index] 初始化成功完成');
+      }
     })
     .catch((err) => {
-      isInitializing = false;
-      console.error('[DeepSeek Voyager] Timeline initialization failed:', err);
+      if (timelineManagerInstance === instance) {
+        isInitializing = false;
+        console.error('[DeepSeek Voyager] Timeline initialization failed:', err);
+      }
     });
 }
 
